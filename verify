@@ -1,0 +1,7 @@
+#!/bin/zsh
+set -eu
+cd "${0:A:h}"
+./build.sh
+APP="$PWD/build/Screen Shoter Open.app"
+codesign --verify --strict "$APP"
+"$APP/Contents/MacOS/ScreenShoterOpen" --verify
