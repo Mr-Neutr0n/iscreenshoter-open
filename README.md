@@ -79,6 +79,10 @@ window animation. [Motion evidence and validation](docs/MOTION.md).
 
 ![Editor toolbar](docs/media/editor-toolbar.png)
 
+![Color and width palette](docs/media/editor-palette.png)
+
+[Palette appearance correction](docs/PALETTE.md).
+
 ## Build and verification
 
 No third-party packages are needed. The project builds with `swiftc` and `actool`.

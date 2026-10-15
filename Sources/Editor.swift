@@ -313,12 +313,13 @@ private final class ScreenshotEditorWindow:NSWindow {
 }
 private final class EditorToolbar:NSView {
     var manuallyPositioned = false
+    var didMove: (() -> Void)?
     private var last:NSPoint?
     override func mouseDown(with event:NSEvent) { last = event.locationInWindow }
     override func mouseDragged(with event:NSEvent) {
         guard let last = last,let superview = superview else { return }; let next = event.locationInWindow
         frame.origin = NSPoint(x:min(max(0,frame.minX+next.x-last.x),max(0,superview.bounds.width-frame.width)),y:min(max(0,frame.minY+next.y-last.y),max(0,superview.bounds.height-frame.height)))
-        manuallyPositioned = true; self.last = next
+        manuallyPositioned = true; self.last = next; didMove?()
     }
     override func mouseUp(with event:NSEvent) { last = nil }
 }
@@ -367,6 +368,7 @@ final class EditorController:NSWindowController,NSWindowDelegate {
     private var toolButtons:[NSButton] = []
     private var undoButton = NSButton()
     private var widthMemory:[Int:CGFloat] = [:]
+    private var palette:NSView?
     private var popover:NSPopover?
     private var ocrObserver:NSObjectProtocol?
     private var presetImages:[NSImage] = []
@@ -433,6 +435,7 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         let okSlot = NSView()
         let okLabel = NSTextField(labelWithString:"OK"); okLabel.font = .boldSystemFont(ofSize:19); okLabel.textColor = Self.confirmColor; okLabel.frame = NSRect(x:25,y:13,width:32,height:23); okSlot.addSubview(okLabel)
         let ok = NSButton(title:"",target:self,action:#selector(copyImage)); ok.isBordered = false; ok.frame = NSRect(x:27,y:13,width:28,height:23); ok.toolTip = "Copy (⌘C)"; ok.setAccessibilityLabel("OK: Copy screenshot"); okSlot.addSubview(ok); add(okSlot,width:83)
+        toolbar.didMove = { [weak self] in self?.positionPalette() }
         toolbar.frame = NSRect(x:0,y:0,width:768,height:48); root.addSubview(toolbar); refreshSaveMode(); positionToolbar()
     }
     private static let confirmColor = NSColor(srgbRed:231/255,green:254/255,blue:102/255,alpha:1)
@@ -441,8 +444,15 @@ final class EditorController:NSWindowController,NSWindowDelegate {
     @objc private func saveModes(_ sender:NSButton) { let menu = NSMenu(); for (index,title) in ["Save","Quick Save"].enumerated() { let item = NSMenuItem(title:title,action:#selector(selectSaveMode(_:)),keyEquivalent:""); item.target = self; item.tag = index; item.state = UserDefaults.standard.bool(forKey:"quickSaveMode") == (index == 1) ? .on : .off; menu.addItem(item) }; menu.popUp(positioning:nil,at:NSPoint(x:0,y:sender.bounds.minY),in:sender) }
     @objc private func selectSaveMode(_ sender:NSMenuItem) { UserDefaults.standard.set(sender.tag == 1,forKey:"quickSaveMode"); refreshSaveMode() }
     private func positionToolbar() {
-        guard let root = window?.contentView,!toolbar.manuallyPositioned else { return }
-        toolbar.frame.origin = Self.toolbarOrigin(selection:canvas.selectionViewRect,bounds:root.bounds,overlay:overlay)
+        guard let root = window?.contentView else { return }
+        if !toolbar.manuallyPositioned { toolbar.frame.origin = Self.toolbarOrigin(selection:canvas.selectionViewRect,bounds:root.bounds,overlay:overlay) }
+        positionPalette()
+    }
+    private func positionPalette() {
+        guard let palette, let root = window?.contentView else { return }
+        let below = toolbar.frame.minY - 56
+        let y = below >= 0 ? below : toolbar.frame.maxY + 8
+        palette.frame.origin = NSPoint(x: min(max(0,toolbar.frame.minX),max(0,root.bounds.width-palette.frame.width)), y: min(max(0,y),max(0,root.bounds.height-palette.frame.height)))
     }
     private static func toolbarOrigin(selection:NSRect,bounds:NSRect,overlay:Bool) -> NSPoint {
         let x = min(max(0,selection.minX),max(0,bounds.width-768))
@@ -451,10 +461,18 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         return NSPoint(x:x,y:max(0,y))
     }
     private func updateUI() { undoButton.isEnabled = canvas.canUndo; for button in toolButtons { button.state = canvas.tool?.rawValue == button.tag ? .on : .off; button.wantsLayer = true; button.layer?.backgroundColor = button.state == .on ? NSColor.white.withAlphaComponent(0.18).cgColor : NSColor.clear.cgColor; button.layer?.cornerRadius = 5 }; positionToolbar() }
-    @objc private func chooseTool(_ sender:NSButton) { canvas.finishText(); guard let tool = EditorTool(rawValue:sender.tag) else { return }; canvas.tool = sender.state == .on ? tool : nil; canvas.width = widthMemory[tool.widthGroup] ?? tool.defaultWidth; updateUI(); if canvas.tool != nil { options(sender) } }
+    @objc private func chooseTool(_ sender:NSButton) { canvas.finishText(); guard let tool = EditorTool(rawValue:sender.tag) else { return }; canvas.tool = sender.state == .on ? tool : nil; canvas.width = widthMemory[tool.widthGroup] ?? tool.defaultWidth; updateUI(); if canvas.tool != nil { options(sender) } else { palette?.removeFromSuperview(); palette = nil } }
     @objc private func cancel() { window?.close() }
     @objc private func undo() { canvas.undoAction() }
     @objc private func options(_ sender:NSButton) {
+        popover?.close()
+        palette?.removeFromSuperview()
+        let root = makePalette()
+        palette = root
+        window?.contentView?.addSubview(root)
+        positionPalette()
+    }
+    private func makePalette() -> NSView {
         let root = NSView(frame:NSRect(x:0,y:0,width:460,height:48)); root.wantsLayer = true; root.layer?.backgroundColor = NSColor(deviceRed:65/255,green:65/255,blue:65/255,alpha:1).cgColor; root.layer?.cornerRadius = 10
         let slider = EditorWidthSlider(frame:NSRect(x:32,y:16,width:76,height:16)); slider.value = canvas.width; slider.color = canvas.color
         slider.onChange = { [weak self] value in guard let self = self else { return }; if let tool = self.canvas.tool { self.widthMemory[tool.widthGroup] = value }; self.canvas.setWidth(value) }
@@ -466,11 +484,12 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         let offsets:[CGFloat] = [0,28,57,85,114,142,171,199,228,256]
         for (index,color) in swatches.enumerated() { let button = EditorSwatch(frame:NSRect(x:165+offsets[index],y:13,width:22,height:22)); button.swatch = color; button.selected = color == canvas.color; button.tag = index; button.target = self; button.action = #selector(changeColor(_:)); button.isBordered = false; button.toolTip = ["Red","Light red","Orange","Green","Blue","Violet","Pink","Gray","White","Black"][index]; button.setAccessibilityLabel(button.toolTip); buttons.append(button); root.addSubview(button) }
         for button in buttons { button.changed = { [weak self,weak root,weak slider,weak small,weak large] chosen in guard let self = self else { return }; self.canvas.setColor(chosen.swatch); for other in root?.subviews.compactMap({ $0 as? EditorSwatch }) ?? [] { other.selected = other === chosen; other.needsDisplay = true }; slider?.color = chosen.swatch; slider?.needsDisplay = true; small?.layer?.backgroundColor = chosen.swatch.cgColor; large?.layer?.backgroundColor = chosen.swatch.cgColor } }
-        let controller = NSViewController(); controller.view = root; let popup = NSPopover(); popup.appearance = NSAppearance(named:.vibrantDark); popup.contentViewController = controller; popup.contentSize = root.frame.size; popup.behavior = .transient; popover = popup; popup.show(relativeTo:sender.bounds,of:sender,preferredEdge:.maxY)
+        return root
     }
     @objc private func changeWidth(_ sender:NSSlider) { let value = CGFloat(sender.doubleValue); if let tool = canvas.tool { widthMemory[tool.widthGroup] = value }; canvas.setWidth(value) }
     @objc private func changeColor(_ sender:NSButton) { canvas.setColor(swatches[sender.tag]) }
     @objc private func importPopup(_ sender:NSButton) {
+        palette?.removeFromSuperview(); palette = nil
         canvas.finishText(); presetImages = []
         presetImages = (1...5).compactMap { publicAsset("q_\($0)") }
         if let directory = Bundle.main.resourceURL?.appendingPathComponent("emoteAsset"),let urls = try? FileManager.default.contentsOfDirectory(at:directory,includingPropertiesForKeys:nil) { presetImages += urls.sorted { $0.lastPathComponent < $1.lastPathComponent }.compactMap { NSImage(contentsOf:$0) } }
@@ -621,6 +640,12 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         try require(layout.toolbar.subviews[17].subviews.first?.frame == NSRect(x:0,y:7,width:9,height:35),"Original save dropdown hit area changed")
         try require(layout.toolbar.subviews[18].subviews.first is NSTextField && layout.toolbar.subviews[18].subviews.last?.frame == NSRect(x:27,y:13,width:28,height:23),"Original OK label or hit area changed")
         try writeParityRender(layout.toolbar, name: "editor-toolbar")
+        layout.options(layout.toolButtons[0])
+        try require(layout.palette?.superview === layout.window?.contentView && layout.popover == nil,"Palette must be a plain editor view without native popover material")
+        if let palette = layout.palette {
+            try require(palette.frame.size == NSSize(width:460,height:48) && palette.layer?.cornerRadius == 10,"Palette geometry changed")
+            try writeParityRender(palette,name:"editor-palette")
+        }
         layout.window?.close()
         // Exercise the real completion handoff without touching the clipboard or disk.
         let flight = EditorController(image:NSImage(cgImage:cg,size:NSSize(width:100,height:80)),selection:NSRect(x:10,y:20,width:50,height:30),screenFrame:NSRect(x:-1000,y:200,width:100,height:80))
