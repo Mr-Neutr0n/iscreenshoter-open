@@ -93,6 +93,21 @@ final class HistoryStore {
         entries.removeAll { $0.path == url.path }; changed()
     }
     static func thumbnail(at url: URL, maximumPixels: Int = 160) -> NSImage? {
+        guard maximumPixels > 0 else { return nil }
+        if url.pathExtension.lowercased() == "pdf" {
+            guard let document = CGPDFDocument(url as CFURL), let page = document.page(at:1) else { return nil }
+            let box = page.getBoxRect(.mediaBox)
+            guard box.width > 0, box.height > 0 else { return nil }
+            let scale = min(1,CGFloat(maximumPixels)/max(box.width,box.height))
+            let width = max(1,Int(box.width*scale)), height = max(1,Int(box.height*scale))
+            guard let context = CGContext(data:nil,width:width,height:height,bitsPerComponent:8,bytesPerRow:0,space:CGColorSpaceCreateDeviceRGB(),bitmapInfo:CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+            let rect = CGRect(x:0,y:0,width:width,height:height)
+            context.setFillColor(NSColor.white.cgColor); context.fill(rect)
+            context.concatenate(page.getDrawingTransform(.mediaBox,rect:rect,rotate:0,preserveAspectRatio:true))
+            context.drawPDFPage(page)
+            guard let image = context.makeImage() else { return nil }
+            return NSImage(cgImage:image,size:NSSize(width:width,height:height))
+        }
         guard let source = CGImageSourceCreateWithURL(url as CFURL,[kCGImageSourceShouldCache:false] as CFDictionary),
               let image = CGImageSourceCreateThumbnailAtIndex(source,0,[kCGImageSourceCreateThumbnailFromImageAlways:true,kCGImageSourceCreateThumbnailWithTransform:true,kCGImageSourceThumbnailMaxPixelSize:maximumPixels,kCGImageSourceShouldCacheImmediately:true] as CFDictionary) else { return nil }
         return NSImage(cgImage:image,size:NSSize(width:image.width,height:image.height))
@@ -114,6 +129,11 @@ final class HistoryStore {
         try data.write(to:export); store.recordSaved(url:export)
         guard let cache = store.add(image), let thumb = thumbnail(at:export) else { throw NSError(domain:"HistoryVerification",code:2) }
         try require(max(thumb.size.width,thumb.size.height) <= 160,"Thumbnail decoding must be bounded")
+        let pdfView = NSImageView(frame:NSRect(x:0,y:0,width:1200,height:800)); pdfView.image = image
+        let pdf = fixture.appendingPathComponent("export.pdf")
+        try pdfView.dataWithPDF(inside:pdfView.bounds).write(to:pdf)
+        guard let pdfThumb = thumbnail(at:pdf) else { throw NSError(domain:"HistoryVerification",code:3,userInfo:[NSLocalizedDescriptionKey:"PDF history thumbnail is missing"]) }
+        try require(max(pdfThumb.size.width,pdfThumb.size.height) <= 160,"PDF history thumbnails must also be bounded")
         store.removeFromHistory([export,cache])
         try require(FileManager.default.fileExists(atPath:export.path) && !FileManager.default.fileExists(atPath:cache.path),"History removal must preserve exports")
         store.recordSaved(url:export); let expired = store.add(image)!
