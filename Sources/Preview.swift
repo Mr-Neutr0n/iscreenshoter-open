@@ -126,9 +126,30 @@ final class FloatingPreviewController: NSWindowController, NSWindowDelegate {
     private let controls = NSView()
     private let imageContainer = PreviewSurface()
     private let closeButton = NSButton()
-    static func open(image: NSImage, url: URL, screenFrame: NSRect? = nil) {
+    static func open(image: NSImage, url: URL, screenFrame: NSRect? = nil, sourceFrame: NSRect? = nil) {
         let controller = FloatingPreviewController(image: image, frame: screenFrame)
-        retained.append(controller); controller.showWindow(nil); controller.scheduleDismissal()
+        retained.append(controller)
+        controller.present(from: sourceFrame)
+        controller.scheduleDismissal()
+    }
+    // REA copy path 0x100043008: start at the global cut rect, then use
+    // setFrame:display:animate:. AppKit owns the duration and interpolation.
+    private func present(from sourceFrame: NSRect?) {
+        guard let window else { return }
+        let destination = window.frame
+        let source = Self.validSourceFrame(sourceFrame)
+        if let source { window.setFrame(source, display: false) }
+        showWindow(nil)
+        if source != nil {
+            window.setFrame(destination, display: true,
+                            animate: !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)
+        }
+    }
+    private static func validSourceFrame(_ frame: NSRect?) -> NSRect? {
+        guard let frame, frame.origin.x.isFinite, frame.origin.y.isFinite,
+              frame.width.isFinite, frame.height.isFinite,
+              frame.width > 0, frame.height > 0 else { return nil }
+        return frame
     }
     private init(image: NSImage, frame: NSRect?) {
         self.image = image
@@ -197,6 +218,9 @@ final class FloatingPreviewController: NSWindowController, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { timer?.invalidate(); timer = nil; Self.retained.removeAll { $0 === self } }
     static func verifyInteractions() throws {
         func require(_ value: Bool, _ message: String) throws { if !value { throw NSError(domain: "PreviewVerification", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) } }
+        let selection = NSRect(x: -1200, y: 180, width: 640, height: 360)
+        try require(validSourceFrame(selection) == selection, "Flight must retain global selection coordinates on secondary displays")
+        try require(validSourceFrame(nil) == nil && validSourceFrame(.zero) == nil && validSourceFrame(NSRect(x: 0, y: 0, width: CGFloat.infinity, height: 1)) == nil, "Invalid flight geometry must use the settled preview")
         var state = PreviewLifetime()
         try require(!state.expired(at: 4.99) && state.expired(at: 5), "Preview must expire at five seconds")
         state.enter(); try require(!state.expired(at: 100) && state.deadline == nil, "Hover must cancel dismissal")

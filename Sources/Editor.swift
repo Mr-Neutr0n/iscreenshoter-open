@@ -502,7 +502,18 @@ final class EditorController:NSWindowController,NSWindowDelegate {
     private func clipboardImage() -> NSImage? { if let objects = NSPasteboard.general.readObjects(forClasses:[NSImage.self],options:nil) as? [NSImage],let image = objects.first { return image }; if let objects = NSPasteboard.general.readObjects(forClasses:[NSURL.self],options:nil) as? [URL],let url = objects.first { return NSImage(contentsOf:url) }; return nil }
     @objc private func importClipboard() { if let image = clipboardImage() { canvas.addImage(image) }; popover?.close() }
     private func resultImage() -> NSImage? { guard let image = canvas.renderedImage() else { return nil }; return NSImage(cgImage:image,size:NSSize(width:image.width,height:image.height)) }
-    private func finish(_ image:NSImage,notify:Bool = true) { if overlay { window?.close(); if notify { NotificationCenter.default.post(name:Notification.Name("ScreenshotCompleted"),object:image,userInfo:screenFrame.map { ["screenFrame":$0] }) } } }
+    private func finish(_ image:NSImage,notify:Bool = true) {
+        guard overlay else { return }
+        // Convert view coordinates before closing the editor. Pixels are not points
+        // on Retina displays, and secondary displays can have negative origins.
+        var info: [String: Any] = [:]
+        if let screenFrame { info["screenFrame"] = screenFrame }
+        if let window {
+            info["sourceFrame"] = window.convertToScreen(canvas.convert(canvas.selectionViewRect, to: nil))
+        }
+        window?.close()
+        if notify { NotificationCenter.default.post(name:Notification.Name("ScreenshotCompleted"),object:image,userInfo:info) }
+    }
     @objc private func copyImage() { guard let image = resultImage() else { return }; HistoryPreviewController.copy(image); finish(image) }
     @objc private func saveAs() { guard let image = resultImage() else { return }; SaveController.present(image:image,parentWindow:window,completion:{ [weak self] _ in DispatchQueue.main.async { self?.finish(image,notify:false) } }) }
     @objc private func saveFormat(_ sender:NSMenuItem) { if let format = sender.representedObject as? String { UserDefaults.standard.set(format,forKey:"format") }; saveAs() }
@@ -611,6 +622,25 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         try require(layout.toolbar.subviews[18].subviews.first is NSTextField && layout.toolbar.subviews[18].subviews.last?.frame == NSRect(x:27,y:13,width:28,height:23),"Original OK label or hit area changed")
         try writeParityRender(layout.toolbar, name: "editor-toolbar")
         layout.window?.close()
+        // Exercise the real completion handoff without touching the clipboard or disk.
+        let flight = EditorController(image:NSImage(cgImage:cg,size:NSSize(width:100,height:80)),selection:NSRect(x:10,y:20,width:50,height:30),screenFrame:NSRect(x:-1000,y:200,width:100,height:80))
+        var emittedSource: NSRect?
+        var emittedScreen: NSRect?
+        let observer = NotificationCenter.default.addObserver(forName:Notification.Name("ScreenshotCompleted"),object:nil,queue:nil) { note in
+            emittedSource = note.userInfo?["sourceFrame"] as? NSRect
+            emittedScreen = note.userInfo?["screenFrame"] as? NSRect
+        }
+        flight.finish(NSImage(cgImage:cg,size:NSSize(width:100,height:80)))
+        NotificationCenter.default.removeObserver(observer)
+        try require(emittedSource == NSRect(x:-990,y:220,width:50,height:30),"Copy completion lost the captured selection's global point coordinates")
+        try require(emittedScreen == NSRect(x:-1000,y:200,width:100,height:80),"Copy completion lost the source display")
+        let retinaFlight = EditorController(image:NSImage(cgImage:cg,size:NSSize(width:100,height:80)),selection:NSRect(x:10,y:10,width:25,height:15),screenFrame:NSRect(x:-1000,y:200,width:50,height:40))
+        let retinaObserver = NotificationCenter.default.addObserver(forName:Notification.Name("ScreenshotCompleted"),object:nil,queue:nil) { note in
+            emittedSource = note.userInfo?["sourceFrame"] as? NSRect
+        }
+        retinaFlight.finish(NSImage(cgImage:cg,size:NSSize(width:100,height:80)))
+        NotificationCenter.default.removeObserver(retinaObserver)
+        try require(emittedSource == NSRect(x:-990,y:210,width:25,height:15),"Retina capture pixels must not be used as animation points")
         let canvas = EditorCanvas(image:NSImage(cgImage:cg,size:NSSize(width:100,height:80)),overlay:true); canvas.frame = NSRect(x:0,y:0,width:100,height:80)
         canvas.tool = .rectangle; canvas.width = 4; canvas.begin(at:NSPoint(x:60,y:5)); canvas.drag(to:NSPoint(x:90,y:25)); canvas.end(at:NSPoint(x:90,y:25))
         guard let output = canvas.renderedImage() else { throw NSError(domain:"EditorVerification",code:4) }; let bitmap = NSBitmapImageRep(cgImage:output)

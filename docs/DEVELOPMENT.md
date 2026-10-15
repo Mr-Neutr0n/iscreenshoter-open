@@ -37,5 +37,5 @@ using the app manually with the required macOS permissions.
 
 There is no claim that every original feature or visual state has been reproduced.
 Remaining comparison gaps include selected annotation chrome, some hover/popup
-states, edge placement, preview entrance timing, custom OCR dropdown behavior,
+states, edge placement, a live motion comparison, custom OCR dropdown behavior,
 and alternate pin drag affordances.

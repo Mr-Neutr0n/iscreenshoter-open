@@ -114,7 +114,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NotificationCenter.default.addObserver(forName: Notification.Name("StartRecording"), object: nil, queue: .main) { _ in RecorderController.present() }
         NotificationCenter.default.addObserver(forName: Notification.Name("ScreenshotCompleted"), object: nil, queue: .main) { note in
-            if let image = note.object as? NSImage, let url = HistoryStore.shared.add(image) { FloatingPreviewController.open(image: image, url: url, screenFrame: note.userInfo?["screenFrame"] as? NSRect) }
+            if let image = note.object as? NSImage, let url = HistoryStore.shared.add(image) { FloatingPreviewController.open(image: image, url: url, screenFrame: note.userInfo?["screenFrame"] as? NSRect, sourceFrame: note.userInfo?["sourceFrame"] as? NSRect) }
         }
         NotificationCenter.default.addObserver(forName: Notification.Name("HistoryChanged"), object: nil, queue: .main) { [weak self] _ in self?.dashboard.refresh() }
         if CommandLine.arguments.contains("--demo-preview") {

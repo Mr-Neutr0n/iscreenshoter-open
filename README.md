@@ -24,7 +24,7 @@ of someone's desktop. Reproduce the media with `./scripts/render-demo.sh`.
 - Rectangle, oval, line, arrow, pen, mosaic, multiline text, stickers, and imported images.
 - Annotation movement, resizing, and undo.
 - PNG clipboard copy, JPG/PNG/PDF exports, quick save, and the macOS share sheet.
-- Screenshot history, corner previews, drag-out, Finder reveal, and Trash deletion.
+- Screenshot history, animated copy-to-corner previews, drag-out, Finder reveal, and Trash deletion.
 - Local Apple Vision OCR with editable results and table formatting.
 - Floating pins with preset or custom scale.
 - Screen or window recording to H.264 MP4, with optional system audio.
@@ -67,6 +67,9 @@ the app if macOS requests it. OCR runs entirely on your Mac.
 
 Change the global shortcuts in Settings. Quit other apps that own the same
 combination. Failed registrations retry when another application exits.
+
+Copying a capture now shrinks and moves it into the corner with the native macOS
+window animation. [Motion evidence and validation](docs/MOTION.md).
 
 ## More screenshots
 
