@@ -1,0 +1,35 @@
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    name: Build and verify (macOS ARM64)
+    runs-on: macos-15
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Record runner toolchain
+        run: |
+          uname -m
+          sw_vers
+          xcodebuild -version
+          xcrun --sdk macosx --show-sdk-version
+      - name: Verify
+        run: ./verify
+      - name: Ensure generated files do not change source
+        run: git diff --exit-code
+      - name: Preserve build metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: build-metadata
+          path: build/Screen Shoter Open.app/Contents/Resources/build-manifest.json
+          if-no-files-found: ignore

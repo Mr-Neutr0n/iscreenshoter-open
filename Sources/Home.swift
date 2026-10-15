@@ -13,14 +13,23 @@ func parityColor(_ hex: UInt32) -> NSColor { NSColor(srgbRed: CGFloat((hex >> 16
 
 final class DashboardController: NSViewController {
     weak var owner: AppDelegate?
+    private let historyStore: HistoryStore
     var shortcutError: String?
     private let history = NSView()
     private let scroll = NSScrollView()
     private var selected: Set<URL> = []
     private var deleteButton: NSButton?
+    private var trashButton: NSButton?
+    private var visibleFiles: [URL] = []
+    private var thumbnails: [URL: HistoryThumbnail] = [:]
+    private var pending: [URL: Operation] = [:]
+    private let thumbnailCache = NSCache<NSURL, NSImage>()
+    private let thumbnailQueue: OperationQueue = { let q = OperationQueue(); q.maxConcurrentOperationCount = 2; q.qualityOfService = .userInitiated; return q }()
+    private var scrollObserver: NSObjectProtocol?
+    private var scrollUpdate: DispatchWorkItem?
     private var captureLabel: NSTextField?
     private var ocrLabel: NSTextField?
-    init(owner: AppDelegate) { self.owner = owner; super.init(nibName: nil, bundle: nil) }
+    init(owner: AppDelegate, historyStore: HistoryStore = .shared) { self.owner = owner; self.historyStore = historyStore; super.init(nibName: nil, bundle: nil) }
     required init?(coder: NSCoder) { fatalError() }
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 378)); view.wantsLayer = true; view.layer?.backgroundColor = NSColor(deviceRed: 0.2, green: 0.2, blue: 0.2, alpha: 1).cgColor; view.layer?.cornerRadius = 8; view.layer?.masksToBounds = true
@@ -41,10 +50,22 @@ final class DashboardController: NSViewController {
         captureLabel = parityLabel("", frame: NSRect(x: 21, y: 250, width: 68, height: 16), size: 13, color: .white.withAlphaComponent(0.5), in: view)
         ocrLabel = parityLabel("", frame: NSRect(x: 125, y: 248, width: 68, height: 16), size: 13, color: .white.withAlphaComponent(0.5), in: view)
         scroll.frame = NSRect(x: 0, y: 59, width: 320, height: 183); scroll.hasVerticalScroller = true; scroll.scrollerStyle = .overlay; scroll.drawsBackground = false; scroll.documentView = history; view.addSubview(scroll)
-        parityButton("Open folder", frame: NSRect(x: 21, y: 31, width: 18, height: 16), image: "icon_openfolder", action: { NSWorkspace.shared.open(HistoryStore.shared.directory) }, in: view)
-        deleteButton = parityButton("Delete selected", frame: NSRect(x: 63, y: 30, width: 15, height: 17), image: "icon_del", action: { [weak self] in self?.deleteSelected() }, in: view)
+        parityButton("Open folder", frame: NSRect(x: 21, y: 31, width: 18, height: 16), image: "icon_openfolder", action: { [weak self] in if let folder = self?.historyStore.directory { try? FileManager.default.createDirectory(at:folder,withIntermediateDirectories:true); NSWorkspace.shared.open(folder) } }, in: view)
+        deleteButton = parityButton("Delete selected", frame: NSRect(x: 63, y: 30, width: 15, height: 17), image: "icon_del", action: { [weak self] in self?.removeSelected() }, in: view)
+        deleteButton?.toolTip = "Remove selected from history. Exported files are kept."
+        deleteButton?.setAccessibilityLabel("Remove selected from history")
+        trashButton = parityButton("Move to Trash…", frame:NSRect(x:96,y:25,width:128,height:27), action:{ [weak self] in self?.trashSelected() }, in:view)
+        trashButton?.font = .systemFont(ofSize:12)
+        thumbnailCache.countLimit = 48
+        scroll.contentView.postsBoundsChangedNotifications = true
+        scrollObserver = NotificationCenter.default.addObserver(forName:NSView.boundsDidChangeNotification, object:scroll.contentView, queue:.main) { [weak self] _ in
+            self?.scrollUpdate?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.loadVisibleThumbnails() }
+            self?.scrollUpdate = work; DispatchQueue.main.asyncAfter(deadline:.now() + 0.05, execute:work)
+        }
         refresh()
     }
+    deinit { if let scrollObserver { NotificationCenter.default.removeObserver(scrollObserver) }; thumbnailQueue.cancelAllOperations(); scrollUpdate?.cancel() }
     func refresh() {
         guard isViewLoaded else { return }
         captureLabel?.stringValue = homeShortcutTitle("capture", fallback: 0); ocrLabel?.stringValue = homeShortcutTitle("ocr", fallback: 17)
@@ -52,21 +73,60 @@ final class DashboardController: NSViewController {
         let priorHeight = history.bounds.height
         let priorOrigin = scroll.contentView.bounds.origin.y
         let atTop = priorOrigin >= max(0, priorHeight - scroll.contentView.bounds.height) - 0.5
-        let files = HistoryStore.shared.files; selected.formIntersection(Set(files)); history.subviews.forEach { $0.removeFromSuperview() }
-        let height = max(183, 42 + CGFloat((files.count + 2) / 3) * 78 - 18)
-        history.frame = NSRect(x: 0, y: 0, width: 320, height: height)
-        for (index, url) in files.enumerated() {
-            let thumb = HistoryThumbnail(frame: NSRect(x: 20 + CGFloat(index % 3) * 96, y: height - 21 - 60 - CGFloat(index / 3) * 78, width: 80, height: 60)); thumb.image = NSImage(contentsOf: url); thumb.selected = selected.contains(url)
-            thumb.clicked = { [weak self] double in
-                guard let self else { return }
-                if double { self.owner?.popover.performClose(nil); HistoryPreviewController.open(url: url) }
-                else { if self.selected.contains(url) { self.selected.remove(url) } else { self.selected.insert(url) }; self.refresh() }
-            }; history.addSubview(thumb)
+        let files = historyStore.files; selected.formIntersection(Set(files))
+        if files != visibleFiles {
+            for url in visibleFiles where !files.contains(url) { thumbnailCache.removeObject(forKey:url as NSURL) }
+            visibleFiles = files
+            for (url, thumb) in thumbnails where !files.contains(url) { thumb.removeFromSuperview(); thumbnails.removeValue(forKey:url) }
+            for (url, operation) in pending where !files.contains(url) { operation.cancel(); pending.removeValue(forKey:url) }
         }
-        let top = max(0, height - scroll.contentView.bounds.height)
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: atTop ? top : min(top, max(0, priorOrigin + height - priorHeight))))
+        let height = max(183, 42 + CGFloat((files.count + 2) / 3) * 78 - 18)
+        history.frame = NSRect(x:0,y:0,width:320,height:height)
+        let top = max(0,height - scroll.contentView.bounds.height)
+        scroll.contentView.scroll(to:NSPoint(x:0,y:atTop ? top : min(top,max(0,priorOrigin + height - priorHeight))))
         scroll.reflectScrolledClipView(scroll.contentView)
-        scroll.isHidden = files.isEmpty; deleteButton?.isHidden = selected.isEmpty
+        scroll.isHidden = files.isEmpty
+        loadVisibleThumbnails(); updateSelection()
+    }
+    private func updateSelection() {
+        for (url, thumb) in thumbnails { thumb.selected = selected.contains(url); thumb.needsDisplay = true }
+        deleteButton?.isHidden = selected.isEmpty; trashButton?.isHidden = selected.isEmpty
+    }
+    private func loadVisibleThumbnails() {
+        let visible = scroll.contentView.bounds.insetBy(dx:0,dy:-78)
+        let height = history.frame.height
+        let targets = visibleFiles.enumerated().compactMap { index, url -> (URL,NSRect)? in
+            let frame = NSRect(x:20 + CGFloat(index % 3) * 96,y:height - 81 - CGFloat(index / 3) * 78,width:80,height:60)
+            return frame.intersects(visible) ? (url,frame) : nil
+        }
+        let targetURLs = Set(targets.map { $0.0 })
+        for (url, thumb) in thumbnails where !targetURLs.contains(url) { thumb.removeFromSuperview(); thumbnails.removeValue(forKey:url) }
+        for (url, operation) in pending where !targetURLs.contains(url) { operation.cancel(); pending.removeValue(forKey:url) }
+        for (url, frame) in targets {
+            let thumb = thumbnails[url] ?? HistoryThumbnail(frame:frame)
+            thumb.frame = frame; thumb.selected = selected.contains(url)
+            if thumbnails[url] == nil {
+                thumbnails[url] = thumb; history.addSubview(thumb)
+                thumb.clicked = { [weak self] double in
+                    guard let self else { return }
+                    if double { self.owner?.popover.performClose(nil); HistoryPreviewController.open(url:url) }
+                    else { if self.selected.contains(url) { self.selected.remove(url) } else { self.selected.insert(url) }; self.updateSelection() }
+                }
+            }
+            if let cached = thumbnailCache.object(forKey:url as NSURL) { thumb.image = cached; thumb.needsDisplay = true; continue }
+            guard pending[url] == nil else { continue }
+            let operation = BlockOperation()
+            operation.addExecutionBlock { [weak operation] in
+                guard operation?.isCancelled == false else { return }
+                let image = HistoryStore.thumbnail(at:url)
+                DispatchQueue.main.async { [weak self, weak operation] in
+                    guard let self, operation?.isCancelled == false else { return }
+                    self.pending.removeValue(forKey:url)
+                    if let image { self.thumbnailCache.setObject(image,forKey:url as NSURL); self.thumbnails[url]?.image = image; self.thumbnails[url]?.needsDisplay = true }
+                }
+            }
+            pending[url] = operation; thumbnailQueue.addOperation(operation)
+        }
     }
     func verifyLayout() throws {
         loadViewIfNeeded()
@@ -80,7 +140,45 @@ final class DashboardController: NSViewController {
             throw NSError(domain: "HomeParity", code: 1, userInfo: [NSLocalizedDescriptionKey: "Recovered Home layout failed"])
         }
     }
-    private func deleteSelected() { do { for url in selected { try HistoryStore.shared.trash(url) }; selected.removeAll(); refresh() } catch { alert(error.localizedDescription) } }
+    static func verifyHistoryScaling() throws {
+        let fixture = FileManager.default.temporaryDirectory.appendingPathComponent("home-history-" + UUID().uuidString)
+        let suite = "home-history-" + UUID().uuidString
+        let defaults = UserDefaults(suiteName:suite)!
+        try FileManager.default.createDirectory(at:fixture,withIntermediateDirectories:true)
+        defer { try? FileManager.default.removeItem(at:fixture); defaults.removePersistentDomain(forName:suite) }
+        let store = HistoryStore(directory:fixture.appendingPathComponent("cache"),defaults:defaults)
+        store.setEnabled(true)
+        let image = NSImage(size:NSSize(width:12,height:8)); image.lockFocus(); NSColor.green.setFill(); NSRect(x:0,y:0,width:12,height:8).fill(); image.unlockFocus()
+        let data = NSBitmapImageRep(cgImage:image.cgImage(forProposedRect:nil,context:nil,hints:nil)!).representation(using:.jpeg,properties:[:])!
+        for index in 0..<205 {
+            let file = fixture.appendingPathComponent("fixture-\(index).jpg")
+            try data.write(to:file); store.recordSaved(url:file)
+        }
+        let owner = AppDelegate(); let controller = DashboardController(owner:owner,historyStore:store)
+        controller.loadViewIfNeeded()
+        let originalViews = controller.thumbnails.mapValues(ObjectIdentifier.init)
+        if let first = controller.visibleFiles.first { controller.selected.insert(first) }
+        controller.updateSelection()
+        guard controller.visibleFiles.count == 200, controller.thumbnails.count <= 18,
+              originalViews == controller.thumbnails.mapValues(ObjectIdentifier.init) else {
+            throw NSError(domain:"HomeScaling",code:1,userInfo:[NSLocalizedDescriptionKey:"History must bound thumbnail views and reuse them on selection"])
+        }
+        controller.scroll.contentView.scroll(to:NSPoint(x:0,y:0)); controller.loadVisibleThumbnails()
+        guard controller.thumbnails.count <= 18, controller.pending.count <= 18 else { throw NSError(domain:"HomeScaling",code:2) }
+        controller.thumbnailQueue.cancelAllOperations(); controller.scrollUpdate?.cancel()
+        print("History dashboard verified: 205 fixtures capped at 200, visible-only views and requests, selection reuses views")
+    }
+    private func removeSelected() {
+        historyStore.removeFromHistory(Array(selected)); selected.removeAll(); refresh()
+    }
+    private func trashSelected() {
+        let urls = selected
+        let prompt = NSAlert(); prompt.messageText = "Move \(urls.count) selected file(s) to Trash?"
+        prompt.informativeText = "This moves the actual files to Trash, including exports in your chosen folders. To keep exported files, use Remove from history instead."
+        prompt.addButton(withTitle:"Move to Trash"); prompt.addButton(withTitle:"Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        do { for url in urls { try historyStore.trash(url) }; selected.removeAll(); refresh() } catch { alert(error.localizedDescription) }
+    }
 }
 private final class HistoryThumbnail: NSView {
     var image: NSImage?

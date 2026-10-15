@@ -102,7 +102,7 @@ final class HistoryPreviewController: NSWindowController, NSWindowDelegate {
         let controls = NSView(frame: NSRect(x: 145, y: 12, width: 160, height: 40)); controls.autoresizingMask = [.minXMargin, .maxXMargin, .maxYMargin]; root.addSubview(controls)
         let lime = NSColor(calibratedRed: 231/255, green: 254/255, blue: 102/255, alpha: 1)
         for (index, spec) in [("icon_copy", #selector(copyImage), CGFloat(28), lime, true), ("icon_openfolder", #selector(revealImage), CGFloat(28), lime, true), ("icon_delete", #selector(deleteImage), CGFloat(24), NSColor.red, false)].enumerated() {
-            let button = PreviewCircle(asset: spec.0, size: 40, glyphSize: spec.2, hoverColor: spec.3, darkHoverGlyph: spec.4, initialAlpha: index < 2 ? 0.6047217767 : 0.6, target: self, action: spec.1); button.frame.origin.x = CGFloat(index * 60); controls.addSubview(button)
+            let button = PreviewCircle(asset: spec.0, size: 40, glyphSize: spec.2, hoverColor: spec.3, darkHoverGlyph: spec.4, initialAlpha: index < 2 ? 0.6047217767 : 0.6, target: self, action: spec.1); button.frame.origin.x = CGFloat(index * 60); button.toolTip = ["Copy image", "Reveal in Finder", "Move file to Trash…"][index]; button.setAccessibilityLabel(button.toolTip); controls.addSubview(button)
         }
         controls.isHidden = true; root.hover = { inside in controls.isHidden = !inside }
         root.pointerMoved = { [weak controls] in controls?.subviews.compactMap { $0 as? PreviewCircle }.forEach { $0.resetRestingAlpha() } }
@@ -114,7 +114,14 @@ final class HistoryPreviewController: NSWindowController, NSWindowDelegate {
     }
     @objc private func copyImage() { Self.copy(image) }
     @objc private func revealImage() { NSWorkspace.shared.activateFileViewerSelecting([url]) }
-    @objc private func deleteImage() { do { try HistoryStore.shared.trash(url); close() } catch { alert(error.localizedDescription) } }
+    @objc private func deleteImage() {
+        let prompt = NSAlert()
+        prompt.messageText = "Move this file to Trash?"
+        prompt.informativeText = "This moves the actual file, including an export in your chosen folder. To keep it, remove its entry from the history panel instead."
+        prompt.addButton(withTitle: "Move to Trash"); prompt.addButton(withTitle: "Cancel")
+        guard prompt.runModal() == .alertFirstButtonReturn else { return }
+        do { try HistoryStore.shared.trash(url); close() } catch { alert(error.localizedDescription) }
+    }
     func windowWillClose(_ notification: Notification) { Self.retained.removeAll { $0 === self } }
 }
 
@@ -126,7 +133,7 @@ final class FloatingPreviewController: NSWindowController, NSWindowDelegate {
     private let controls = NSView()
     private let imageContainer = PreviewSurface()
     private let closeButton = NSButton()
-    static func open(image: NSImage, url: URL, screenFrame: NSRect? = nil, sourceFrame: NSRect? = nil) {
+    static func open(image: NSImage, screenFrame: NSRect? = nil, sourceFrame: NSRect? = nil) {
         let controller = FloatingPreviewController(image: image, frame: screenFrame)
         retained.append(controller)
         controller.present(from: sourceFrame)

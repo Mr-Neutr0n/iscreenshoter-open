@@ -149,7 +149,7 @@ final class OCRController: NSWindowController, NSWindowDelegate {
         window.standardWindowButton(.miniaturizeButton)?.isHidden = true
         window.standardWindowButton(.zoomButton)?.isHidden = true
         super.init(window: window); window.delegate = self
-        model.table = UserDefaults.standard.bool(forKey: "ocrTables")
+        model.table = AppEnvironment.defaults.bool(forKey: "ocrTables")
         loadLanguages()
         model.copy = { [weak self] in self?.copyResult() }
         model.languageChanged = { [weak self] in self?.changeLanguage() }
@@ -164,14 +164,14 @@ final class OCRController: NSWindowController, NSWindowDelegate {
         let request = VNRecognizeTextRequest(); request.recognitionLevel = .accurate
         codes = ["automatic"] + ((try? request.supportedRecognitionLanguages()) ?? ["en-US"])
         model.languageTitles = codes.map { code in code == "automatic" ? "Automatic" : (Locale.current.localizedString(forIdentifier: code) ?? code) }
-        let selected = UserDefaults.standard.string(forKey: "ocrLanguage") ?? Locale.preferredLanguages.first ?? "en-US"
+        let selected = AppEnvironment.defaults.string(forKey: "ocrLanguage") ?? Locale.preferredLanguages.first ?? "en-US"
         model.selectedLanguage = codes.firstIndex(of: selected) ?? codes.firstIndex(where: { $0.hasPrefix(String(selected.prefix(2))) }) ?? 0
     }
     private func changeLanguage() {
-        UserDefaults.standard.set(codes[model.selectedLanguage], forKey: "ocrLanguage"); recognize()
+        AppEnvironment.defaults.set(codes[model.selectedLanguage], forKey: "ocrLanguage"); recognize()
     }
     private func changeFormatting() {
-        UserDefaults.standard.set(model.table, forKey: "ocrTables"); applyResult()
+        AppEnvironment.defaults.set(model.table, forKey: "ocrTables"); applyResult()
     }
     private func applyResult() { model.text = (model.table ? result.table : result.plain).trimmingCharacters(in: .whitespacesAndNewlines) }
     private func copyResult() {

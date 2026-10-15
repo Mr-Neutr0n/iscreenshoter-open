@@ -439,10 +439,10 @@ final class EditorController:NSWindowController,NSWindowDelegate {
         toolbar.frame = NSRect(x:0,y:0,width:768,height:48); root.addSubview(toolbar); refreshSaveMode(); positionToolbar()
     }
     private static let confirmColor = NSColor(srgbRed:231/255,green:254/255,blue:102/255,alpha:1)
-    private func refreshSaveMode() { let quick = UserDefaults.standard.bool(forKey:"quickSaveMode"); saveButton.image = publicAsset(quick ? "save_quick_image" : "save_image"); saveButton.toolTip = quick ? "Quick Save (⌘S)" : "Save (⌘S)" }
-    @objc private func saveSelected() { if UserDefaults.standard.bool(forKey:"quickSaveMode") { quickSave() } else { saveAs() } }
-    @objc private func saveModes(_ sender:NSButton) { let menu = NSMenu(); for (index,title) in ["Save","Quick Save"].enumerated() { let item = NSMenuItem(title:title,action:#selector(selectSaveMode(_:)),keyEquivalent:""); item.target = self; item.tag = index; item.state = UserDefaults.standard.bool(forKey:"quickSaveMode") == (index == 1) ? .on : .off; menu.addItem(item) }; menu.popUp(positioning:nil,at:NSPoint(x:0,y:sender.bounds.minY),in:sender) }
-    @objc private func selectSaveMode(_ sender:NSMenuItem) { UserDefaults.standard.set(sender.tag == 1,forKey:"quickSaveMode"); refreshSaveMode() }
+    private func refreshSaveMode() { let quick = AppEnvironment.defaults.bool(forKey:"quickSaveMode"); saveButton.image = publicAsset(quick ? "save_quick_image" : "save_image"); saveButton.toolTip = quick ? "Quick Save (⌘S)" : "Save (⌘S)" }
+    @objc private func saveSelected() { if AppEnvironment.defaults.bool(forKey:"quickSaveMode") { quickSave() } else { saveAs() } }
+    @objc private func saveModes(_ sender:NSButton) { let menu = NSMenu(); for (index,title) in ["Save","Quick Save"].enumerated() { let item = NSMenuItem(title:title,action:#selector(selectSaveMode(_:)),keyEquivalent:""); item.target = self; item.tag = index; item.state = AppEnvironment.defaults.bool(forKey:"quickSaveMode") == (index == 1) ? .on : .off; menu.addItem(item) }; menu.popUp(positioning:nil,at:NSPoint(x:0,y:sender.bounds.minY),in:sender) }
+    @objc private func selectSaveMode(_ sender:NSMenuItem) { AppEnvironment.defaults.set(sender.tag == 1,forKey:"quickSaveMode"); refreshSaveMode() }
     private func positionToolbar() {
         guard let root = window?.contentView else { return }
         if !toolbar.manuallyPositioned { toolbar.frame.origin = Self.toolbarOrigin(selection:canvas.selectionViewRect,bounds:root.bounds,overlay:overlay) }
@@ -535,7 +535,7 @@ final class EditorController:NSWindowController,NSWindowDelegate {
     }
     @objc private func copyImage() { guard let image = resultImage() else { return }; HistoryPreviewController.copy(image); finish(image) }
     @objc private func saveAs() { guard let image = resultImage() else { return }; SaveController.present(image:image,parentWindow:window,completion:{ [weak self] _ in DispatchQueue.main.async { self?.finish(image,notify:false) } }) }
-    @objc private func saveFormat(_ sender:NSMenuItem) { if let format = sender.representedObject as? String { UserDefaults.standard.set(format,forKey:"format") }; saveAs() }
+    @objc private func saveFormat(_ sender:NSMenuItem) { if let format = sender.representedObject as? String { AppEnvironment.defaults.set(format,forKey:"format") }; saveAs() }
     @objc private func quickSave() { guard let image = resultImage() else { return }; do { _ = try SaveController.quickSave(image:image); finish(image,notify:false) } catch { let alert = NSAlert(); alert.messageText = error.localizedDescription; alert.runModal() } }
     @objc private func ocr() { guard let image = resultImage() else { return }; finish(image,notify:false); OCRController.present(image:image) }
     @objc private func pin() { guard let image = resultImage() else { return }; var frame:NSRect? = nil; if let screen = screenFrame { let r = canvas.selectionViewRect; frame = r.offsetBy(dx:screen.minX,dy:screen.minY) }; finish(image,notify:false); PinController.open(image:image,frame:frame) }

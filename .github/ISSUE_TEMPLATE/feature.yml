@@ -1,0 +1,15 @@
+name: Feature request
+description: Propose a concrete improvement.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What task cannot you complete today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and alternatives considered
+    validations:
+      required: true

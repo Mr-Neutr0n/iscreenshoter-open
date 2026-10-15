@@ -5,6 +5,9 @@ import UniformTypeIdentifiers
 
 final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDelegate, SCStreamOutput {
     static var shared: RecorderController?
+    static let stateDidChange = Notification.Name("RecordingStateChanged")
+    static var isActive: Bool { shared?.hasActiveRecording ?? false }
+    static func stopActiveRecording() { shared?.requestStop() }
     static func present() {
         if shared == nil { shared = RecorderController() }
         shared?.showWindow(nil)
@@ -35,15 +38,23 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
     private var busy = false
     private var recording = false
     private var stopCompletion: (() -> Void)?
+    private var stopRequested = false
     var hasActiveRecording: Bool { recording || busy }
 
     func stopForTermination(completion: @escaping () -> Void) {
         if !hasActiveRecording { completion(); return }
         stopCompletion = completion
+        requestStop()
+    }
+
+    /// Stop requests also work while ScreenCaptureKit is still starting.
+    func requestStop() {
+        guard hasActiveRecording else { return }
+        stopRequested = true
         if recording && !busy { stopRecording() }
     }
 
-    private init() {
+    private init(loadSources: Bool = true) {
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 450, height: 310),
                               styleMask: [.titled, .closable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "Screen recording"
@@ -92,7 +103,7 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
         stop.action = #selector(stopRecording)
         stop.isEnabled = false
         view.addSubview(stop)
-        Task { await loadSources() }
+        if loadSources { Task { await self.loadSources() } }
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
@@ -143,6 +154,7 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
         panel.canCreateDirectories = true
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
+            self.stopRequested = false
             self.busy = true
             self.updateControls()
             self.status.stringValue = "Starting recording…"
@@ -159,7 +171,7 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
                         self.status.stringValue = "Recording locally. Stop to finish and save the video."
                         self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.updateDuration() }
                         self.updateControls()
-                        if self.stopCompletion != nil { self.stopRecording() }
+                        if self.stopRequested { self.stopRecording() }
                     }
                 } catch {
                     await self.abort()
@@ -338,6 +350,7 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
     }
 
     private func completePendingStop() {
+        stopRequested = false
         let completion = stopCompletion
         stopCompletion = nil
         completion?()
@@ -354,6 +367,8 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
         cursor.isEnabled = !recording && !busy
         start.isEnabled = !recording && !busy && source.numberOfItems > 0
         stop.isEnabled = recording && !busy
+        NotificationCenter.default.post(name: Self.stateDidChange, object: self,
+                                        userInfo: ["active": hasActiveRecording, "recording": recording, "busy": busy])
     }
 
     private func showError(_ error: Error, context: String) {
@@ -446,8 +461,38 @@ final class RecorderController: NSWindowController, NSWindowDelegate, SCStreamDe
         guard reader.status == .completed, count == 30 else { throw reader.error ?? failure("Expected 30 decoded frames, got \(count)") }
     }
 
+    /// Exercises startup-stop handoff and state notifications without permission or capture.
+    static func verifyControls() throws {
+        let controller = RecorderController(loadSources: false)
+        var states: [[String: Bool]] = []
+        let observer = NotificationCenter.default.addObserver(forName: stateDidChange, object: controller, queue: nil) { note in
+            states.append(note.userInfo as? [String: Bool] ?? [:])
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        func check(_ valid: Bool, _ message: String) throws {
+            if !valid { throw NSError(domain: "RecorderVerification", code: 2, userInfo: [NSLocalizedDescriptionKey: message]) }
+        }
+        controller.requestStop()
+        try check(!controller.stopRequested, "Idle recorder accepted a stop request")
+        controller.busy = true
+        controller.updateControls()
+        try check(controller.hasActiveRecording, "Starting recorder must remain visible as active")
+        controller.requestStop()
+        try check(controller.stopRequested, "Stop during startup was lost")
+        try check(!controller.windowShouldClose(controller.window!), "Closing during startup must wait for stop and save")
+        controller.busy = false
+        controller.completePendingStop()
+        controller.updateControls()
+        try check(!controller.stopRequested && !controller.hasActiveRecording, "Finished recorder did not clear pending stop")
+        try check(states.count == 2 && states[0]["active"] == true && states[1]["active"] == false,
+                  "Recording indicator did not receive startup and completion state")
+    }
+
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if recording || busy { sender.orderOut(nil); return false }
+        if hasActiveRecording {
+            requestStop()
+            return false
+        }
         Self.shared = nil
         return true
     }

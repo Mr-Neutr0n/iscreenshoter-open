@@ -43,7 +43,7 @@ final class SaveController: NSWindowController, NSWindowDelegate, NSTextFieldDel
     private init(image: NSImage, completion: ((URL) -> Void)?) {
         self.image = image
         self.completion = completion
-        self.format = Format(rawValue: UserDefaults.standard.string(forKey: "format") ?? "jpg") ?? .jpg
+        self.format = Format(rawValue: AppEnvironment.defaults.string(forKey: "format") ?? "jpg") ?? .jpg
         self.directory = Self.selectedDirectory()
         let window = SavePanel(contentRect: NSRect(x: 0, y: 0, width: 480, height: 318), styleMask: [.borderless], backing: .buffered, defer: false)
         window.title = "Save"; window.isReleasedWhenClosed = false; window.isMovableByWindowBackground = true; window.center()
@@ -65,7 +65,8 @@ final class SaveController: NSWindowController, NSWindowDelegate, NSTextFieldDel
             view.addSubview(button); radios.append(button); parityLabel(value.label, frame: NSRect(x: x + 22, y: 194, width: CGFloat([28,30,28][index]), height: 15), color: NSColor(srgbRed: 0.8, green: 0.8, blue: 0.8, alpha: 0.8), in: view)
         }
         nameField.frame = NSRect(x: 192, y: 157, width: 237, height: 15); nameField.stringValue = Self.defaultName(); nameField.delegate = self; nameField.font = .systemFont(ofSize: 12); nameField.isBordered = false; nameField.drawsBackground = false; nameField.textColor = .white; nameField.focusRingType = .none; view.addSubview(nameField)
-        reveal.frame = NSRect(x: 186, y: 119, width: 101, height: 18); reveal.font = .systemFont(ofSize: 13); reveal.state = UserDefaults.standard.bool(forKey: "revealSaved") ? .on : .off; view.addSubview(reveal)
+        reveal.appearance = NSAppearance(named: .darkAqua)
+        reveal.frame = NSRect(x: 186, y: 119, width: 101, height: 18); reveal.font = .systemFont(ofSize: 13); reveal.state = AppEnvironment.defaults.bool(forKey: "revealSaved") ? .on : .off; view.addSubview(reveal)
         errorLabel.frame = NSRect(x: 171, y: 96, width: 4, height: 13); errorLabel.font = .systemFont(ofSize: 10); errorLabel.textColor = NSColor(srgbRed: 1, green: 0.3529411765, blue: 0.3529411765, alpha: 1); errorLabel.lineBreakMode = .byTruncatingMiddle; view.addSubview(errorLabel)
         let cancel = parityButton("Cancel", frame: NSRect(x: 16, y: 34, width: 43, height: 15), color: NSColor(srgbRed: 0.8, green: 0.8, blue: 0.8, alpha: 0.8), action: { [weak self] in self?.cancelSave() }, in: view); cancel.font = .systemFont(ofSize: 12); cancel.keyEquivalent = "\u{1b}"
         save.title = ""; save.setAccessibilityLabel("SAVE"); save.isBordered = false; save.keyEquivalent = "\r"; save.font = .systemFont(ofSize: 14); save.contentTintColor = .black; save.wantsLayer = true; save.layer?.backgroundColor = parityColor(0xDEFD35).cgColor; save.layer?.cornerRadius = 4; save.target = self; save.action = #selector(saveImage); save.frame = NSRect(x: 191, y: 25, width: 98, height: 32); view.addSubview(save)
@@ -90,21 +91,28 @@ final class SaveController: NSWindowController, NSWindowDelegate, NSTextFieldDel
         return "Screen Shoter Open - " + date.string(from: Date())
     }
     private static func selectedDirectory() -> URL {
-        if let path = UserDefaults.standard.string(forKey: "saveDirectory"), !path.isEmpty { return URL(fileURLWithPath: path, isDirectory: true) }
-        let directory = HistoryStore.shared.directory
+        if let path = AppEnvironment.defaults.string(forKey: "saveDirectory"), !path.isEmpty {
+            let directory = URL(fileURLWithPath:path,isDirectory:true)
+            if directory.standardizedFileURL.path == AppEnvironment.defaultExportDirectory.standardizedFileURL.path {
+                try? FileManager.default.createDirectory(at:directory,withIntermediateDirectories:true)
+            }
+            return directory
+        }
+        let directory = AppEnvironment.defaultExportDirectory
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         return directory
     }
     private func updateLocation() {
-        location.stringValue = directory.path
-        location.toolTip = directory.path
+        let displayPath = AppEnvironment.isTesting && ProcessInfo.processInfo.environment["ISCREENSHOTER_RENDER_DIR"] != nil ? "/Users/demo/Pictures" : directory.path
+        location.stringValue = displayPath
+        location.toolTip = displayPath
     }
     @objc private func changeFormat(_ sender: NSButton) {
         format = Format.allCases[sender.tag]
         for button in radios { button.state = button === sender ? .on : .off }
         updateFormats()
         extensionLabel.stringValue = "." + format.rawValue
-        UserDefaults.standard.set(format.rawValue, forKey: "format")
+        AppEnvironment.defaults.set(format.rawValue, forKey: "format")
         validate()
     }
     private func updateFormats() {
@@ -144,7 +152,7 @@ final class SaveController: NSWindowController, NSWindowDelegate, NSTextFieldDel
         panel.beginSheetModal(for: window!) { [weak self] response in
             guard let self, response == .OK, let url = panel.url else { return }
             self.directory = url
-            UserDefaults.standard.set(url.path, forKey: "saveDirectory")
+            AppEnvironment.defaults.set(url.path, forKey: "saveDirectory")
             self.updateLocation()
             self.validate()
             afterSelection?()
@@ -168,9 +176,9 @@ final class SaveController: NSWindowController, NSWindowDelegate, NSTextFieldDel
         }
         do {
             let url = try Self.write(image: image, directory: directory, name: nameField.stringValue, format: format, resolveCollision: false)
-            UserDefaults.standard.set(format.rawValue, forKey: "format")
-            UserDefaults.standard.set(directory.path, forKey: "saveDirectory")
-            UserDefaults.standard.set(reveal.state == .on, forKey: "revealSaved")
+            AppEnvironment.defaults.set(format.rawValue, forKey: "format")
+            AppEnvironment.defaults.set(directory.path, forKey: "saveDirectory")
+            AppEnvironment.defaults.set(reveal.state == .on, forKey: "revealSaved")
             HistoryStore.shared.recordSaved(url: url)
             if reveal.state == .on { NSWorkspace.shared.activateFileViewerSelecting([url]) }
             completion?(url)

@@ -4,12 +4,13 @@ import ServiceManagement
 import Carbon
 
 private enum SettingsSection: Int, CaseIterable {
-    case general, shortcuts, about
-    var title: String { ["General", "Shortcuts", "About"][rawValue] }
+    case general, shortcuts, privacy, about
+    var title: String { ["General", "Shortcuts", "Privacy", "About"][rawValue] }
 }
 private final class SettingsModel: ObservableObject {
     @Published var section: SettingsSection = .general
-    @Published var folder = ProcessInfo.processInfo.environment["ISCREENSHOTER_RENDER_DIR"] != nil ? "/Users/demo/Pictures" : (UserDefaults.standard.string(forKey:"saveDirectory") ?? HistoryStore.shared.directory.path)
+    @Published var folder = ProcessInfo.processInfo.environment["ISCREENSHOTER_RENDER_DIR"] != nil ? "/Users/demo/Pictures" : (AppEnvironment.defaults.string(forKey:"saveDirectory") ?? AppEnvironment.defaultExportDirectory.path)
+    @Published var historyEnabled = HistoryStore.shared.historyEnabled
     @Published var login = SMAppService.mainApp.status == .enabled
     @Published var recordingPreference: String?
     weak var controller: SettingsController?
@@ -57,7 +58,7 @@ private struct CurrentSettingsView: View {
                         .background(Color(nsColor:parityColor(0x484848)),in:RoundedRectangle(cornerRadius:14,style:.continuous))
                 }.buttonStyle(.plain)
             }.fixedSize(horizontal:true,vertical:false)
-                .padding(.top,62).padding(.bottom,16).padding(.horizontal,16)
+                .padding(.top,42).padding(.bottom,16).padding(.horizontal,16)
             Color(nsColor:parityColor(0x505050)).frame(width:1)
             VStack(alignment:.leading,spacing:0) {
                 Text(model.section.title).font(.system(size:14)).foregroundStyle(gray)
@@ -109,6 +110,22 @@ private struct CurrentSettingsView: View {
                     .font(.system(size:12)).foregroundStyle(.white).lineSpacing(3).padding(.top,20)
                 Spacer()
             }.padding(16)
+        case .privacy:
+            VStack(alignment:.leading,spacing:14) {
+                Toggle("Keep screenshot history",isOn:Binding(get:{ model.historyEnabled },set:{
+                    HistoryStore.shared.setEnabled($0); model.historyEnabled = $0
+                })).font(.system(size:14)).foregroundStyle(.white)
+                    .tint(Color(nsColor:parityColor(0x8A75EA))).environment(\.colorScheme,.dark)
+                Text("Off by default. Copying still shows a temporary preview. When enabled, captures stay on this Mac for up to 7 days, 200 items or 100 MB.")
+                    .font(.system(size:12)).foregroundStyle(.white).fixedSize(horizontal:false,vertical:true)
+                Text("Turning history off clears cached captures. History removal and Clear History keep exported files.")
+                    .font(.system(size:12)).foregroundStyle(.white).fixedSize(horizontal:false,vertical:true)
+                Button("Clear History…") { model.controller?.clearHistory() }
+                    .font(.system(size:13)).foregroundStyle(.white).buttonStyle(.plain)
+                    .padding(.horizontal,12).padding(.vertical,7)
+                    .background(Color(nsColor:parityColor(0x484848)),in:RoundedRectangle(cornerRadius:6))
+                Spacer(minLength:0)
+            }.padding(16)
         case .about:
             VStack(alignment:.leading,spacing:0) {
                 Text("Version: \(Bundle.main.object(forInfoDictionaryKey:"CFBundleShortVersionString") as? String ?? "1.0")")
@@ -142,7 +159,16 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
         model.finishRecording(); guard let parent = window else { return }
         let panel = NSOpenPanel(); panel.canChooseFiles = false; panel.canChooseDirectories = true; panel.canCreateDirectories = true
         panel.beginSheetModal(for:parent) { [weak self] response in
-            if response == .OK,let url = panel.url { UserDefaults.standard.set(url.path,forKey:"saveDirectory"); self?.model.folder = url.path }
+            if response == .OK,let url = panel.url { AppEnvironment.defaults.set(url.path,forKey:"saveDirectory"); self?.model.folder = url.path }
+        }
+    }
+    fileprivate func clearHistory() {
+        guard let window else { return }
+        let prompt = NSAlert(); prompt.messageText = "Clear screenshot history?"
+        prompt.informativeText = "Cached captures will be deleted. Exported image files stay in their folders."
+        prompt.addButton(withTitle:"Clear History"); prompt.addButton(withTitle:"Cancel")
+        prompt.beginSheetModal(for:window) { response in
+            if response == .alertFirstButtonReturn { HistoryStore.shared.clear() }
         }
     }
     fileprivate func setLogin(_ enabled: Bool) {
@@ -164,12 +190,12 @@ final class SettingsController: NSWindowController, NSWindowDelegate {
             guard window.contentView?.bounds.size == NSSize(width:520,height:306),controller.model.section == section else { throw NSError(domain:"SettingsVerification",code:3,userInfo:[NSLocalizedDescriptionKey:"Current Settings branch or size changed"]) }
         }
         controller.close()
-        print("Settings verified: recovered 520×306 SwiftUI root, three sections, titled normal-level window and hidden minimize/zoom")
+        print("Settings verified: recovered 520×306 SwiftUI root, four sections including privacy, titled normal-level window and hidden minimize/zoom")
     }
 }
 
 func shortcutTitle(_ preference: String, fallback: UInt32) -> String {
-    let defaults = UserDefaults.standard
+    let defaults = AppEnvironment.defaults
     let code = UInt16(defaults.object(forKey: preference + "Key") as? UInt32 ?? fallback)
     let mods = UInt32(defaults.integer(forKey: preference + "Modifiers"))
     let labels: [UInt16: String] = [0:"A",1:"S",2:"D",3:"F",4:"H",5:"G",6:"Z",7:"X",8:"C",9:"V",11:"B",12:"Q",13:"W",14:"E",15:"R",16:"Y",17:"T",18:"1",19:"2",20:"3",21:"4",22:"6",23:"5",24:"=",25:"9",26:"7",27:"-",28:"8",29:"0",30:"]",31:"O",32:"U",33:"[",34:"I",35:"P",37:"L",38:"J",39:"'",40:"K",41:";",42:"\\",43:",",44:"/",45:"N",46:"M",47:".",49:"Space",36:"Return",48:"Tab",51:"Delete",123:"←",124:"→",125:"↓",126:"↑",122:"F1",120:"F2",99:"F3",118:"F4",96:"F5",97:"F6",98:"F7",100:"F8",101:"F9",109:"F10",103:"F11",111:"F12"]
@@ -203,7 +229,7 @@ final class ShortcutRecorder: NSButton {
         if flags.contains(.option) { mods |= UInt32(optionKey) }
         if flags.contains(.control) { mods |= UInt32(controlKey) }
         let other = preference == "capture" ? "ocr" : "capture"
-        let defaults = UserDefaults.standard
+        let defaults = AppEnvironment.defaults
         let otherCode = defaults.object(forKey: other + "Key") as? UInt32 ?? (other == "ocr" ? 17 : 0)
         if otherCode == UInt32(event.keyCode), UInt32(defaults.integer(forKey: other + "Modifiers")) == mods { NSSound.beep(); title = "Already used by " + other; return }
         let previousCode = defaults.object(forKey: preference + "Key")

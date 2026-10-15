@@ -1,0 +1,31 @@
+name: Bug report
+description: Report a reproducible app problem using synthetic content.
+body:
+  - type: markdown
+    attributes:
+      value: For vulnerabilities use the private reporting link in SECURITY.md. Do not upload private screen content.
+  - type: input
+    id: version
+    attributes:
+      label: App version and installation method
+      placeholder: 1.1.0, release ZIP or source
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version, Mac architecture and display setup
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Exact steps and permission status
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true

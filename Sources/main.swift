@@ -38,63 +38,21 @@ final class ActionButton: NSButton {
     @objc func run() { handler?() }
 }
 
-final class HistoryStore {
-    static let shared = HistoryStore()
-    let directory: URL
-    init() {
-        directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("org.hari.screenshoter.open/Image", isDirectory: true)
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    }
-    var files: [URL] {
-        let cached = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.creationDateKey])) ?? []
-        let paths = UserDefaults.standard.stringArray(forKey: "savedImagePaths") ?? []
-        let saved = paths.map { URL(fileURLWithPath: $0) }.filter { FileManager.default.fileExists(atPath: $0.path) }
-        let scanned = cached.filter { ["png", "jpg", "jpeg"].contains($0.pathExtension.lowercased()) }
-        var seen = Set<String>()
-        return (saved + scanned).filter { seen.insert($0.path).inserted }.sorted {
-            let a = (try? $0.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            let b = (try? $1.resourceValues(forKeys: [.creationDateKey]).creationDate) ?? .distantPast
-            return a == b ? $0.lastPathComponent > $1.lastPathComponent : a > b
-        }
-    }
-    func recordSaved(url: URL) {
-        var paths = UserDefaults.standard.stringArray(forKey: "savedImagePaths") ?? []
-        if !paths.contains(url.path) { paths.append(url.path) }
-        UserDefaults.standard.set(paths, forKey: "savedImagePaths")
-        NotificationCenter.default.post(name: Notification.Name("HistoryChanged"), object: nil)
-    }
-    @discardableResult func add(_ image: NSImage) -> URL? {
-        do {
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil), let data = NSBitmapImageRep(cgImage: cg).representation(using: .jpeg, properties: [.compressionFactor: 1]) else { return nil }
-            let date = DateFormatter(); date.dateFormat = "yyyyMMddHHmmssSSS"
-            let url = directory.appendingPathComponent("Screen Shoter Open - " + date.string(from: Date()) + "-" + UUID().uuidString.prefix(5) + ".jpg")
-            try data.write(to: url, options: .atomic)
-            NotificationCenter.default.post(name: Notification.Name("HistoryChanged"), object: nil)
-            return url
-        } catch { alert("Could not save screenshot history: \(error.localizedDescription)"); return nil }
-    }
-    func trash(_ url: URL) throws {
-        try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-        let paths = (UserDefaults.standard.stringArray(forKey: "savedImagePaths") ?? []).filter { $0 != url.path }
-        UserDefaults.standard.set(paths, forKey: "savedImagePaths")
-        NotificationCenter.default.post(name: Notification.Name("HistoryChanged"), object: nil)
-    }
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     var item: NSStatusItem!
     let popover = NSPopover()
     var hotKeys: [EventHotKeyRef] = []
     var eventHandler: EventHandlerRef?
+    private var historyPruneTimer: Timer?
     private var shortcutRecording = false
+    private lazy var recordingItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     var capture: CaptureController?
     var settings: SettingsController?
     var dashboard: DashboardController!
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         NSApp.appearance = NSAppearance(named: .aqua)
-        UserDefaults.standard.register(defaults: ["saveDirectory": HistoryStore.shared.directory.path, "format": "jpg", "ocrLanguage": "automatic", "captureModifiers": UInt32(cmdKey | shiftKey), "ocrModifiers": UInt32(cmdKey | shiftKey)])
+        AppEnvironment.defaults.register(defaults: ["saveDirectory": AppEnvironment.defaultExportDirectory.path, "format": "jpg", "ocrLanguage": "automatic", "captureModifiers": UInt32(cmdKey | shiftKey), "ocrModifiers": UInt32(cmdKey | shiftKey)])
         installMenu()
         item = NSStatusBar.system.statusItem(withLength: 24)
         item.button?.image = publicAsset("icon_topbar") ?? NSImage(systemSymbolName: "viewfinder", accessibilityDescription: "Screen Shoter Open")
@@ -103,10 +61,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.toolTip = "Screen Shoter Open"
         item.button?.setAccessibilityLabel("Screen Shoter Open")
         item.button?.target = self; item.button?.action = #selector(toggle)
+        configureRecordingControls()
         dashboard = DashboardController(owner: self)
         popover.contentViewController = dashboard; popover.behavior = .transient
         popover.contentSize = NSSize(width: 320, height: 378)
         installHotKeys()
+        historyPruneTimer = Timer.scheduledTimer(withTimeInterval: 3600, repeats: true) { [weak self] _ in self?.dashboard?.refresh() }
         NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { [weak self] _ in
             guard let self, !self.shortcutRecording, self.hotKeys.count < 2 else { return }
             self.installHotKeys()
@@ -114,11 +74,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NotificationCenter.default.addObserver(forName: Notification.Name("StartRecording"), object: nil, queue: .main) { _ in RecorderController.present() }
         NotificationCenter.default.addObserver(forName: Notification.Name("ScreenshotCompleted"), object: nil, queue: .main) { note in
-            if let image = note.object as? NSImage, let url = HistoryStore.shared.add(image) { FloatingPreviewController.open(image: image, url: url, screenFrame: note.userInfo?["screenFrame"] as? NSRect, sourceFrame: note.userInfo?["sourceFrame"] as? NSRect) }
+            if let image = note.object as? NSImage { _ = HistoryStore.shared.add(image); FloatingPreviewController.open(image: image, screenFrame: note.userInfo?["screenFrame"] as? NSRect, sourceFrame: note.userInfo?["sourceFrame"] as? NSRect) }
         }
         NotificationCenter.default.addObserver(forName: Notification.Name("HistoryChanged"), object: nil, queue: .main) { [weak self] _ in self?.dashboard.refresh() }
         if CommandLine.arguments.contains("--demo-preview") {
-            if let url = HistoryStore.shared.add(Self.demoImage()) { FloatingPreviewController.open(image: Self.demoImage(), url: url) }
+            FloatingPreviewController.open(image: Self.demoImage())
         } else if CommandLine.arguments.contains("--demo-settings") { showSettings() }
         else if CommandLine.arguments.contains("--capture") { beginCapture(ocr: false) }
         else if CommandLine.arguments.contains("--demo") { EditorController.open(image: Self.demoImage()) }
@@ -133,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return .terminateLater
     }
     func applicationWillTerminate(_ notification: Notification) {
+        historyPruneTimer?.invalidate()
         hotKeys.forEach { UnregisterEventHotKey($0) }
         if let eventHandler { RemoveEventHandler(eventHandler) }
     }
@@ -151,6 +112,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for (name, action, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"), ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"), ("Paste", #selector(NSText.paste(_:)), "v"), ("Select All", #selector(NSText.selectAll(_:)), "a")] { edits.addItem(withTitle: name, action: action, keyEquivalent: key) }
         main.addItem(edit); NSApp.mainMenu = main
     }
+    private func configureRecordingControls() {
+        let menu = NSMenu()
+        let show = NSMenuItem(title: "Show recording controls", action: #selector(showRecorder), keyEquivalent: "")
+        show.target = self; menu.addItem(show)
+        let stop = NSMenuItem(title: "Stop and save recording", action: #selector(stopRecorder), keyEquivalent: "")
+        stop.target = self; menu.addItem(stop)
+        recordingItem.menu = menu
+        NotificationCenter.default.addObserver(forName: RecorderController.stateDidChange, object: nil, queue: .main) { [weak self] _ in self?.refreshRecordingIndicator() }
+        refreshRecordingIndicator()
+    }
+    private func refreshRecordingIndicator() {
+        recordingItem.isVisible = RecorderController.isActive
+        recordingItem.button?.title = "● REC"
+        recordingItem.button?.contentTintColor = .systemRed
+        recordingItem.button?.setAccessibilityLabel("Screen recording active. Open for Stop and save.")
+        recordingItem.button?.toolTip = "Screen recording active: Stop and save"
+    }
+    @objc private func showRecorder() { RecorderController.present() }
+    @objc private func stopRecorder() { RecorderController.stopActiveRecording() }
     @objc func toggle() {
         if popover.isShown { popover.performClose(nil) }
         else if let button = item.button { dashboard.refresh(); popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY); NSApp.activate(ignoringOtherApps: true) }
@@ -205,9 +185,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }, 1, &spec, Unmanaged.passUnretained(self).toOpaque(), &eventHandler)
         }
         for (id, defaultKey, key) in [(UInt32(1), UInt32(kVK_ANSI_A), "captureKey"), (UInt32(2), UInt32(kVK_ANSI_T), "ocrKey")] {
-            let code = UserDefaults.standard.object(forKey: key) as? UInt32 ?? defaultKey
+            let code = AppEnvironment.defaults.object(forKey: key) as? UInt32 ?? defaultKey
             var ref: EventHotKeyRef?
-            let result = RegisterEventHotKey(code, UInt32(UserDefaults.standard.integer(forKey: key == "captureKey" ? "captureModifiers" : "ocrModifiers")), EventHotKeyID(signature: 0x49534C43, id: id), GetApplicationEventTarget(), 0, &ref)
+            let result = RegisterEventHotKey(code, UInt32(AppEnvironment.defaults.integer(forKey: key == "captureKey" ? "captureModifiers" : "ocrModifiers")), EventHotKeyID(signature: 0x49534C43, id: id), GetApplicationEventTarget(), 0, &ref)
             NSLog("Shortcut %@ registration status: %d", key, result)
             if result == noErr, let ref { hotKeys.append(ref) }
             else { dashboard?.shortcutError = "Shortcut in use. Choose another key in Settings." }
@@ -233,18 +213,18 @@ func verifyPublicAssets() throws {
 }
 func verifyShortcutRegistration() throws {
     let keys = ["captureKey", "ocrKey", "captureModifiers", "ocrModifiers"]
-    let previous = keys.map { UserDefaults.standard.object(forKey: $0) }
+    let previous = keys.map { AppEnvironment.defaults.object(forKey: $0) }
     let owner = AppDelegate()
     defer {
         owner.hotKeys.forEach { UnregisterEventHotKey($0) }
         if let handler = owner.eventHandler { RemoveEventHandler(handler) }
-        for (key, value) in zip(keys, previous) { if let value { UserDefaults.standard.set(value, forKey: key) } else { UserDefaults.standard.removeObject(forKey: key) } }
+        for (key, value) in zip(keys, previous) { if let value { AppEnvironment.defaults.set(value, forKey: key) } else { AppEnvironment.defaults.removeObject(forKey: key) } }
     }
     let flags = UInt32(controlKey | optionKey | shiftKey)
-    UserDefaults.standard.set(UInt32(kVK_F18), forKey: "captureKey")
-    UserDefaults.standard.set(UInt32(kVK_F19), forKey: "ocrKey")
-    UserDefaults.standard.set(flags, forKey: "captureModifiers")
-    UserDefaults.standard.set(flags, forKey: "ocrModifiers")
+    AppEnvironment.defaults.set(UInt32(kVK_F18), forKey: "captureKey")
+    AppEnvironment.defaults.set(UInt32(kVK_F19), forKey: "ocrKey")
+    AppEnvironment.defaults.set(flags, forKey: "captureModifiers")
+    AppEnvironment.defaults.set(flags, forKey: "ocrModifiers")
     owner.installHotKeys()
     guard owner.hotKeys.count == 2 else { throw NSError(domain: "ShortcutVerification", code: 1) }
     owner.setShortcutRecording(true)
@@ -254,24 +234,31 @@ func verifyShortcutRegistration() throws {
     guard owner.hotKeys.count == 2 else { throw NSError(domain: "ShortcutVerification", code: 3) }
 }
 
+do { try AppEnvironment.prepare() } catch {
+    fputs("Could not prepare verification storage: \(error)\n", stderr); exit(1)
+}
 let application = NSApplication.shared
 if CommandLine.arguments.contains("--render-demo") {
     application.setActivationPolicy(.prohibited)
     application.appearance = NSAppearance(named: .aqua)
     do {
         try EditorController.renderPublicDemo()
-        exit(0)
+        AppEnvironment.cleanup(); exit(0)
     } catch {
         fputs("Demo rendering failed: \(error)\n", stderr)
-        exit(1)
+        AppEnvironment.cleanup(); exit(1)
     }
 }
 if CommandLine.arguments.contains("--verify") {
     application.setActivationPolicy(.prohibited)
     application.appearance = NSAppearance(named: .aqua)
-    UserDefaults.standard.register(defaults: ["captureModifiers": UInt32(cmdKey | shiftKey), "ocrModifiers": UInt32(cmdKey | shiftKey)])
+    AppEnvironment.defaults.register(defaults: ["captureModifiers": UInt32(cmdKey | shiftKey), "ocrModifiers": UInt32(cmdKey | shiftKey)])
     Task { @MainActor in
         do {
+            try AppEnvironment.verifyIsolation()
+            try HistoryStore.verifyBehavior()
+            try DashboardController.verifyHistoryScaling()
+            print("PASS: isolated fixtures, private history, retention and safe removal")
             try EditorController.verifyRendering()
             print("PASS: editor rendering and toolbar geometry")
             try CaptureMagnifier.verifyRendering()
@@ -294,12 +281,14 @@ if CommandLine.arguments.contains("--verify") {
             try OCRController.verifyLayout()
             try await OCRController.verifyRecognition()
             print("PASS: local OCR and table formatting")
+            try RecorderController.verifyControls()
+            print("PASS: recording stop queue, close behavior and indicator notifications")
             try await RecorderController.verifyEncoding()
             print("PASS: H.264 encoding, duration and decoded frames")
-            exit(0)
+            AppEnvironment.cleanup(); exit(0)
         } catch {
             fputs("Verification failed: \(error)\n", stderr)
-            exit(1)
+            AppEnvironment.cleanup(); exit(1)
         }
     }
     application.run()
